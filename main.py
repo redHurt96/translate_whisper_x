@@ -1,10 +1,65 @@
 import whisperx
 import os
 import json
-from pathlib import Path
 import subprocess
 import shutil
+import torch
+import typing
+import collections
+import pathlib
+import collections
+import time
+import argparse
+from pathlib import Path
+
+from format_transcript import format_transcript
+
+from omegaconf import OmegaConf
+from omegaconf.listconfig import ListConfig
+from omegaconf.dictconfig import DictConfig
+from omegaconf.base import ContainerMetadata, Metadata
+from omegaconf.nodes import AnyNode
+from pyannote.audio.core.task import Specifications, Problem, Resolution
+from pyannote.audio.core.model import Introspection
+
 from whisperx.diarize import DiarizationPipeline
+
+torch.serialization.add_safe_globals([
+    # torch
+    torch.torch_version.TorchVersion,
+
+    # omegaconf (часто внутри pyannote чекпоинтов)
+    OmegaConf,
+    ListConfig,
+    DictConfig,
+    ContainerMetadata,
+    Metadata,
+    AnyNode,
+
+    # pyannote task types (встречались у тебя)
+    Specifications,
+    Problem,
+    Resolution,
+
+    # typing / builtins (встречались у тебя)
+    typing.Any,
+    list,
+    dict,
+    tuple,
+    set,
+
+    # типичные контейнеры/типы, которые иногда всплывают при weights_only
+    pathlib.Path,
+    collections.OrderedDict,
+    collections.defaultdict,
+    int,
+    float, 
+    str, 
+    bool,
+
+    Introspection,
+])
+
 
 # Загрузка переменных окружения из .env файла (если существует)
 env_file = Path(".env")
@@ -19,13 +74,40 @@ if env_file.exists():
 # [Мнение] Для macOS лучше всего использовать CPU.
 # Модели Apple Silicon (M1/M2/M3) могут использовать 'mps', но стабильность
 # и производительность с whisperx могут варьироваться. CPU - надежный вариант.
-device = "cpu"
-compute_type = "int8"  # Тип вычислений, рекомендованный для CPU
+device = "cuda"
+compute_type = "float16"  # Тип вычислений, рекомендованный для GPU
+
+# Включаем TensorFloat-32 для улучшения производительности на GPU
+# (pyannote отключает это для воспроизводимости, но для обычного использования TF32 быстрее)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+# --- ПАРСИНГ АРГУМЕНТОВ ---
+parser = argparse.ArgumentParser(
+    description="Транскрипция и диаризация аудио/видео файлов с помощью WhisperX"
+)
+parser.add_argument(
+    "input_file",
+    type=Path,
+    nargs="?",
+    default=Path("videos/alawar.mkv"),
+    help="Путь к входному файлу (mp4, mkv или mp3). По умолчанию: videos/alawar.mkv"
+)
+parser.add_argument(
+    "--language", "-l",
+    type=str,
+    default="ru",
+    help="Код языка аудио (ru, en, etc.). Указание языка ускоряет транскрипцию. По умолчанию: ru"
+)
+args = parser.parse_args()
 
 # --- НАСТРОЙКИ ---
-input_file = Path("videos/Как мониторить креативы и веб-воронки конкурентов [get.gt].mp4")  # <-- УКАЖИТЕ ПУТЬ К ВАШЕМУ MP4 ИЛИ MP3 ФАЙЛУ
+input_file = args.input_file
 hf_token = os.getenv("HF_TOKEN", "")  # Токен берётся из переменной окружения HF_TOKEN
 data_dir = Path("data")
+
+# Засекаем время начала
+start_time_total = time.time()
 
 
 # --- ЭТАП 1: ПОДГОТОВКА АУДИОФАЙЛА И СТРУКТУРЫ ПАПОК ---
@@ -36,8 +118,9 @@ audio_file = output_dir / "audio.mp3"
 
 if not audio_file.exists():
     print(f"--- Подготовка аудио для '{input_file.name}' ---")
-    if input_file.suffix.lower() == ".mp4":
-        print(f"Обнаружен MP4 файл. Конвертация в MP3: {audio_file}")
+    video_formats = [".mp4", ".mkv"]
+    if input_file.suffix.lower() in video_formats:
+        print(f"Обнаружен видеофайл ({input_file.suffix}). Конвертация в MP3: {audio_file}")
         try:
             command = [
                 "ffmpeg", "-i", str(input_file), "-vn",
@@ -55,7 +138,7 @@ if not audio_file.exists():
         print(f"Обнаружен MP3 файл. Копирование в: {audio_file}")
         shutil.copy(input_file, audio_file)
     else:
-        print(f"Неподдерживаемый формат файла: {input_file.suffix}. Ожидается .mp4 или .mp3")
+        print(f"Неподдерживаемый формат файла: {input_file.suffix}. Ожидается .mp4, .mkv или .mp3")
         exit()
 else:
     print(f"Аудиофайл '{audio_file}' уже существует. Пропускаю подготовку.")
@@ -107,8 +190,8 @@ if result is None:
     model = whisperx.load_model("large-v3", device, compute_type=compute_type)
     print("Загрузка аудио...")
     audio = whisperx.load_audio(audio_file)
-    print("Транскрипция аудио...")
-    result = model.transcribe(audio, batch_size=4)
+    print(f"Транскрипция аудио (язык: {args.language})...")
+    result = model.transcribe(audio, batch_size=4, language=args.language)
     print("Транскрипция завершена.")
     print(f"Сохранение кеша транскрипции: {transcribed_cache}")
     with open(transcribed_cache, 'w', encoding='utf-8') as f:
@@ -159,3 +242,16 @@ for segment in result["segments"]:
     end_time = segment['end']
     text = segment['text']
     print(f"[{start_time:.2f}s - {end_time:.2f}s] {speaker}: {text}")
+
+# --- ЭТАП 5: ФОРМАТИРОВАНИЕ ТРАНСКРИПТА ---
+print("\n--- Этап 5: Форматирование ---")
+# Определяем какой JSON использовать (диаризированный или выровненный)
+final_json = diarized_cache if diarized_cache.is_file() else aligned_cache
+format_transcript(final_json)
+
+# Вывод общего времени выполнения
+elapsed_time = time.time() - start_time_total
+hours = int(elapsed_time // 3600)
+minutes = int((elapsed_time % 3600) // 60)
+seconds = int(elapsed_time % 60)
+print(f"\n=== Общее время выполнения: {hours:02}:{minutes:02}:{seconds:02} ===")
