@@ -10,14 +10,7 @@ echo.
 if not exist ".venv\Scripts\python.exe" (
     echo [ОШИБКА] Виртуальное окружение .venv не найдено!
     echo.
-    echo Создайте его командами:
-    echo   python -m venv .venv
-    echo   .venv\Scripts\activate
-    echo   pip install -r requirements.txt
-    echo.
-    echo Или через Poetry:
-    echo   poetry install
-    echo   poetry shell
+    echo Сначала запустите setup_win.bat для установки.
     echo.
     pause
     exit /b 1

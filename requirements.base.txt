@@ -1,0 +1,13 @@
+# Base dependencies for translate_whisper_x
+# NOTE: torch, torchvision, torchaudio are installed separately via setup_win.bat
+# (CPU or GPU version depending on user choice)
+
+# Core
+av>=15.1.0
+whisperx>=3.4.3
+
+# Web UI
+gradio>=4.0.0
+
+# Utils (required by whisperx/gradio)
+python-dotenv>=1.0.0
