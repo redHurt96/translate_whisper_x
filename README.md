@@ -91,6 +91,19 @@ $env:HF_TOKEN="hf_ВАШ_ТОКЕН_ЗДЕСЬ"
 
 Автоматический установщик для Windows — работает даже на "чистом" ПК.
 
+### Шаг 0: Установка winget (если отсутствует)
+
+Winget — менеджер пакетов Windows, упрощает установку Python и ffmpeg.
+
+Проверьте наличие: `winget --version`
+
+Если winget отсутствует:
+- **Windows 11:** winget предустановлен
+- **Windows 10 (1809+):** установите [App Installer](https://apps.microsoft.com/detail/9NBLGGH4NNS1) из Microsoft Store
+- **Альтернатива:** скачайте `.msixbundle` с [GitHub releases](https://github.com/microsoft/winget-cli/releases/latest)
+
+> Winget необязателен — можно установить Python и ffmpeg вручную (см. ниже).
+
 ### Шаг 1: Установка Python 3.12 (если отсутствует)
 
 Если Python 3.12 не установлен:
@@ -102,6 +115,11 @@ $env:HF_TOKEN="hf_ВАШ_ТОКЕН_ЗДЕСЬ"
 ```bash
 # С winget:
 winget install ffmpeg
+
+# Без winget:
+# 1. Скачайте с https://www.gyan.dev/ffmpeg/builds/ (release build)
+# 2. Распакуйте архив
+# 3. Добавьте папку bin в системный PATH
 
 # Проверка:
 ffmpeg -version
